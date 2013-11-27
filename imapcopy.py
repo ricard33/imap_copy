@@ -21,8 +21,8 @@ import logging
 import argparse
 import email
 
-class IMAP_Copy(object):
 
+class IMAP_Copy(object):
     source = {
         'host': 'localhost',
         'port': 993
@@ -88,22 +88,23 @@ class IMAP_Copy(object):
         self._disconnect('destination')
 
     def copy_all(self):
-        folders = [folder.split(' "/" ')[1][1:-1] for folder in self._conn_source.list('/')[1]]
-        
+        folders = [folder.split(' "/" ')[1][1:-1] for folder in self._conn_source.list('')[1]]
+
         for f in folders:
             if '\\' in f or '[Gmail]' in f:
-                    self.logger.info("Skipping %s" % f)
-                    continue
-            
-            self.logger.info("Copying folder %s" %f)
+                self.logger.info("Skipping %s" % f)
+                continue
+
+            self.logger.info("Copying folder %s" % f)
             self._conn_destination.create(f)
-                
-        
-        self.copy("[Gmail]/All Mail", "[Gmail]/All Mail")        
+            self.copy(f, f)
+
+        #self.copy("[Gmail]/All Mail", "[Gmail]/All Mail")
 
     def copy(self, source_mailbox, destination_mailbox):
         # Connect to source and open mailbox
-        status, data = self._conn_source.select(source_mailbox, True) # Setting read only doesn't destroy the "Seen" status
+        status, data = self._conn_source.select(source_mailbox,
+                                                True) # Setting read only doesn't destroy the "Seen" status
         if status != "OK":
             self.logger.error("Couldn't open source mailbox %s" %
                               source_mailbox)
@@ -129,81 +130,90 @@ class IMAP_Copy(object):
         mail_count = len(data)
 
         self.logger.info("Start copy %s => %s (%d mails)" % (
-                         source_mailbox, destination_mailbox, mail_count))
-        progress_count = 0
+            source_mailbox, destination_mailbox, mail_count))
+        progress_count = 1
         for msg_num in data:
             # Fetch labels for the current message
-            t, d = self._conn_source.uid('fetch', msg_num, '(X-GM-LABELS)')
-            if t == 'OK':
-                    ls = d[0].split("X-GM-LABELS (")[1].split(")")[0]
-                # Here we parse the queried source labels, and build a list of labels        
-                labels = []
-                quote = 0
-                tmpstr = ""
-                for c in ls:
-                    if c == '"' and not quote:
-                            quote = 1
-                            tmpstr = '"'
-                    elif c == '"' and quote:
-                            quote = 0
-                            tmpstr += '"'
-                            labels.append(tmpstr)
-                            tmpstr = ""
-                    elif c == ' ' and not quote:
-                            labels.append(tmpstr)
-                            tmpstr = ""
-                    else:
-                            tmpstr += c
-                if len(tmpstr) != 0:
-                        labels.append(tmpstr)
-            else:
-                labels = []
-
-            #print "Labels: ",labels
-
-            status, data = self._conn_source.uid('fetch', msg_num, '(RFC822 FLAGS)')
-            # Extract the date from the email contents
-            headerdic = self.header_parser.parsestr(data[0][1])
-            pz = email.utils.parsedate_tz(headerdic["Date"])
-            # Convert into suitable timestamp for insertion
-            stamp = email.utils.mktime_tz(pz)
-            date = imaplib.Time2Internaldate(stamp)
-            
-            message = data[0][1]
-            flags = data[1][8:][:-2]  # Not perfect.. Waiting for bug reports
+            #t, d = self._conn_source.uid('fetch', msg_num, '(X-GM-LABELS)')
+            #if t == 'OK':
+            #    ls = d[0].split("X-GM-LABELS (")[1].split(")")[0]
+            #    # Here we parse the queried source labels, and build a list of labels
+            #    labels = []
+            #    quote = 0
+            #    tmpstr = ""
+            #    for c in ls:
+            #        if c == '"' and not quote:
+            #            quote = 1
+            #            tmpstr = '"'
+            #        elif c == '"' and quote:
+            #            quote = 0
+            #            tmpstr += '"'
+            #            labels.append(tmpstr)
+            #            tmpstr = ""
+            #        elif c == ' ' and not quote:
+            #            labels.append(tmpstr)
+            #            tmpstr = ""
+            #        else:
+            #            tmpstr += c
+            #    if len(tmpstr) != 0:
+            #        labels.append(tmpstr)
+            #else:
+            #    labels = []
+            #
+            ##print "Labels: ",labels
 
             # Try to search by message-id if we have already copied it previously?
+            status, data = self._conn_source.uid('fetch', msg_num, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+            headerdic = self.header_parser.parsestr(data[0][1])
             typ, uid = self._conn_destination.uid('search', None, 'Header', 'Message-Id', headerdic['message-ID'])
 
             # If no UID found, we must append it, and fetch the newly create messages' UID
             if len(uid[0]) == 0:
-                    self._conn_destination.append(
-                        destination_mailbox, flags, date, message
-                    )
-                # Fetch the new UID
-                    typ, uid = self._conn_destination.uid('search', None, 'Header', 'Message-Id', headerdic['message-ID'])
+                status, data = self._conn_source.uid('fetch', msg_num, '(RFC822 FLAGS)')
+                # Extract the date from the email contents
+                headerdic = self.header_parser.parsestr(data[0][1])
+                pz = email.utils.parsedate_tz(headerdic["Date"])
+                # Convert into suitable timestamp for insertion
+                stamp = email.utils.mktime_tz(pz)
+                date = imaplib.Time2Internaldate(stamp)
 
-            # Assign labels to the newly created mail
-            if len(labels) > 0:
-                for l in labels:
-                        if len(l) > 0:
-                                    self._conn_destination.uid('store', uid[0], '+X-GM-LABELS', l)
+                message = data[0][1]
+                flags = imaplib.ParseFlags(data[1])  # Not perfect.. Waiting for bug reports
+
+                # we must append it, and fetch the newly create messages' UID
+                self._conn_destination.append(
+                    destination_mailbox, ' '.join(flags), date, message
+                )
+                ## Fetch the new UID
+                #typ, uid = self._conn_destination.uid('search', None, 'Header', 'Message-Id', headerdic['message-ID'])
+                #
+                # Assign labels to the newly created mail
+                #if len(labels) > 0:
+                #    for l in labels:
+                #        if len(l) > 0:
+                #            self._conn_destination.uid('store', uid[0], '+X-GM-LABELS', l)
+
+                self.logger.info("Copy mail %d of %d" % (
+                    progress_count, mail_count))
+            else:
+                self.logger.info("Skipped mail %d of %d" % (
+                    progress_count, mail_count))
 
             progress_count += 1
-            self.logger.info("Copy mail %d of %d" % (
-                             progress_count, mail_count))
 
         self.logger.info("Copy complete %s => %s (%d mails)" % (
-                         source_mailbox, destination_mailbox, mail_count))
+            source_mailbox, destination_mailbox, mail_count))
 
     def run(self):
         try:
             self.connect()
-            if (self.mailbox_mapping[0][0] == "*" and self.mailbox_mapping[0][1] == "*"):
+            if self.mailbox_mapping[0][0] == "*" and self.mailbox_mapping[0][1] == "*":
                 self.copy_all()
             else:
-                    for source_mailbox, destination_mailbox in self.mailbox_mapping:
-                        self.copy(source_mailbox, destination_mailbox)
+                for source_mailbox, destination_mailbox in self.mailbox_mapping:
+                    self.copy(source_mailbox, destination_mailbox)
+        except Exception:
+            self.logger.exception("ERROR")
         finally:
             self.disconnect()
 
@@ -274,6 +284,7 @@ def main():
         imap_copy.run()
     except KeyboardInterrupt:
         imap_copy.disconnect()
+
 
 if __name__ == '__main__':
     main()
